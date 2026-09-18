@@ -1,2 +1,3 @@
-pip install kivy plyer geopy
+pip install geopy requests
+
 
