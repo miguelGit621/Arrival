@@ -1,173 +1,141 @@
 import math
 import time
-from kivy.app import App
-from kivy.uix.boxlayout import BoxLayout
-from kivy.uix.label import Label
-from kivy.uix.textinput import TextInput
-from kivy.uix.button import Button
-from kivy.clock import Clock
-from plyer import gps, notification, vibration, tts
+import sys
+import os
+import requests
 from geopy.geocoders import Nominatim
 
+class GeoAlarmSound:
+    def __init__(self, destination_name: str, target_lat: float, target_lon: float, radius_km: float = 0.5):
+        self.destination_name = destination_name
+        self.target_lat = target_lat
+        self.target_lon = target_lon
+        self.radius_km = radius_km
+        self.is_active = True
 
-class MobileGeoAlarm(BoxLayout):
-    def __init__(self, **kwargs):
-        super().__init__(orientation='vertical', padding=20, spacing=10, **kwargs)
-        
-        self.target_lat = None
-        self.target_lon = None
-        self.radius_km = 0.5
-        self.is_active = False
-
-        # Interface do App
-        self.add_widget(Label(text="📍 Alarme de Geolocalização", font_size='22sp', bold=True))
-
-        self.input_destination = TextInput(
-            hint_text="Digite o endereço ou local de destino",
-            multiline=False, size_hint_y=None, height=100
-        )
-        self.add_widget(self.input_destination)
-
-        self.input_radius = TextInput(
-            hint_text="Raio do alarme em metros (padrão: 500)",
-            text="500", multiline=False, size_hint_y=None, height=100
-        )
-        self.add_widget(self.input_radius)
-
-        self.btn_start = Button(
-            text="Ativar Alarme GPS", background_color=(0.2, 0.7, 0.3, 1),
-            size_hint_y=None, height=120
-        )
-        self.btn_start.bind(on_press=self.toggle_alarm)
-        self.add_widget(self.btn_start)
-
-        self.lbl_status = Label(
-            text="Status: Aguardando configuração...",
-            font_size='16sp', halign='center'
-        )
-        self.add_widget(self.lbl_status)
-
-    def geocode_destination(self, address_text):
-        """Converte texto do endereço em coordenadas (Latitude / Longitude)."""
+    @staticmethod
+    def get_current_location():
+        """Obtém a localização aproximada atual baseada no IP público."""
         try:
-            geolocator = Nominatim(user_agent="mobile_geo_alarm_app")
-            location = geolocator.geocode(address_text)
+            response = requests.get('https://ipapi.co/json/', timeout=5)
+            data = response.json()
+            if 'latitude' in data and 'longitude' in data:
+                return data['latitude'], data['longitude'], f"{data.get('city', '')}, {data.get('region', '')}"
+        except Exception as e:
+            print(f"⚠️ Erro ao obter localização por IP: {e}")
+        return None, None, None
+
+    @staticmethod
+    def geocode_address(address: str):
+        """Converte um nome de local ou endereço em coordenadas (Latitude, Longitude)."""
+        geolocator = Nominatim(user_agent="geo_alarm_app")
+        try:
+            location = geolocator.geocode(address)
             if location:
                 return location.latitude, location.longitude, location.address
         except Exception as e:
-            print(f"Erro ao buscar endereço: {e}")
+            print(f"⚠️ Erro na busca de endereço: {e}")
         return None, None, None
 
-    def toggle_alarm(self, instance):
-        if not self.is_active:
-            address = self.input_destination.text.strip()
-            if not address:
-                self.lbl_status.text = "⚠️ Por favor, digite um destino!"
-                return
-
-            self.lbl_status.text = "🔍 Buscando localização do destino..."
-            lat, lon, full_addr = self.geocode_destination(address)
-
-            if not lat:
-                self.lbl_status.text = "❌ Destino não encontrado."
-                return
-
-            self.target_lat = lat
-            self.target_lon = lon
-            
-            try:
-                self.radius_km = float(self.input_radius.text) / 1000.0
-            except ValueError:
-                self.radius_km = 0.5
-
-            # Inicia escuta do hardware de GPS do celular
-            try:
-                gps.configure(on_location=self.on_gps_location, on_status=self.on_gps_status)
-                gps.start(minTime=3000, minDistance=5)  # Atualiza a cada 3 segundos ou 5 metros
-                self.is_active = True
-                self.btn_start.text = "Desativar Alarme"
-                self.btn_start.background_color = (0.8, 0.2, 0.2, 1)
-                self.lbl_status.text = f"✅ Monitorando GPS!\nDestino: {full_addr[:40]}..."
-            except Exception as e:
-                self.lbl_status.text = f"⚠️ Erro ao acessar GPS: {e}\n(Permissão concedida?)"
-        else:
-            self.stop_alarm()
-
-    def stop_alarm(self):
-        """Para o GPS e desativa o monitoramento."""
-        try:
-            gps.stop()
-        except Exception:
-            pass
-        self.is_active = False
-        self.btn_start.text = "Ativar Alarme GPS"
-        self.btn_start.background_color = (0.2, 0.7, 0.3, 1)
-        self.lbl_status.text = "Status: Alarme desativado."
-
-    def calculate_distance(self, current_lat, current_lon):
-        """Calcula a distância até o destino em km (Haversine)."""
-        R = 6371.0
+    def calculate_distance(self, current_lat: float, current_lon: float) -> float:
+        """Calcula a distância em quilômetros usando a Fórmula de Haversine."""
+        R = 6371.0  # Raio médio da Terra em km
+        
         dlat = math.radians(current_lat - self.target_lat)
         dlon = math.radians(current_lon - self.target_lon)
+        
         a = (math.sin(dlat / 2) ** 2 +
-             math.cos(math.radians(self.target_lat)) *
-             math.cos(math.radians(current_lat)) *
+             math.cos(math.radians(self.target_lat)) * 
+             math.cos(math.radians(current_lat)) * 
              math.sin(dlon / 2) ** 2)
+        
         c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
         return R * c
 
-    def on_gps_location(self, **kwargs):
-        """Callback acionado automaticamente a cada atualização real do GPS do celular."""
-        current_lat = kwargs.get('lat')
-        current_lon = kwargs.get('lon')
+    def play_alarm_sound(self):
+        """Emite um alerta sonoro contínuo quando o alarme é disparado."""
+        print("\n🔊 ********************************** 🔊")
+        print("🚨 ALARME DISPARADO! VOCÊ CHEGOU AO SEU DESTINO! 🚨")
+        print("🔊 ********************************** 🔊\n")
 
-        if not current_lat or not current_lon:
-            return
-
-        dist_km = self.calculate_distance(current_lat, current_lon)
-        dist_m = round(dist_km * 1000)
-
-        self.lbl_status.text = f"📍 Distância atual: {dist_m} metros"
-
-        # Dispara aviso sonoro e vibratório ao entrar no raio
-        if dist_km <= self.radius_km:
-            self.trigger_alert()
-
-    def on_gps_status(self, general_status, status_message):
-        print(f"Status do GPS: {general_status} - {status_message}")
-
-    def trigger_alert(self):
-        """Emite vibração, notificação no celular e voz ao chegar."""
-        self.lbl_status.text = "🚨 VOCÊ CHEGOU AO DESTINO! ACORDE!"
-        
-        # 1. Notificação nativa no topo da tela do celular
-        try:
-            notification.notify(
-                title="Chegou ao destino!",
-                message="Você está dentro do raio do seu ponto de desembarque!"
-            )
-        except Exception:
-            pass
-
-        # 2. Vibra o celular por 3 segundos
-        try:
-            vibration.vibrate(3)
-        except Exception:
-            pass
-
-        # 3. Síntese de Voz (Fala pelo alto-falante)
-        try:
-            tts.speak("Atenção! Você está chegando ao seu destino. Hora de descer!")
-        except Exception:
-            pass
-
-        self.stop_alarm()
+        # Tenta emitir som conforme o Sistema Operacional
+        for _ in range(10):  # Toca 10 vezes
+            if os.name == 'nt':  # Windows
+                import winsound
+                winsound.Beep(2500, 700)  # Frequência: 2500Hz, Duração: 700ms
+            else:  # Linux / macOS
+                sys.stdout.write('\a')
+                sys.stdout.flush()
+                time.sleep(0.5)
 
 
-class GeoAlarmMobileApp(App):
-    def build(self):
-        return MobileGeoAlarm()
+def main():
+    print("==============================================")
+    print("      GPS ALARM - DETECÇÃO & AVISO SONORO     ")
+    print("==============================================\n")
+
+    # 1. Obtém localização inicial
+    print("🔍 Obter localização atual via IP...")
+    curr_lat, curr_lon, city_info = GeoAlarmSound.get_current_location()
+
+    if curr_lat and curr_lon:
+        print(f"📍 Sua localização aproximada atual: {city_info} ({curr_lat}, {curr_lon})\n")
+    else:
+        print("⚠️ Não foi possível obter sua localização por IP.")
+        curr_lat = float(input("Digite sua latitude atual: "))
+        curr_lon = float(input("Digite sua longitude atual: "))
+
+    # 2. Configura o Destino
+    dest_input = input("Digite o nome ou endereço do destino (ex: Estação da Sé, São Paulo): ")
+    target_lat, target_lon, full_address = GeoAlarmSound.geocode_address(dest_input)
+
+    if not target_lat:
+        print("❌ Não foi possível encontrar o endereço especificado.")
+        return
+
+    print(f"🎯 Destino encontrado: {full_address}")
+    print(f"   Coordenadas do Destino: ({target_lat}, {target_lon})")
+
+    radius_input = input("Digite o raio do alarme em metros (padrão: 500m): ")
+    radius_km = (float(radius_input) / 1000.0) if radius_input.strip() else 0.5
+
+    alarm = GeoAlarmSound(
+        destination_name=dest_input,
+        target_lat=target_lat,
+        target_lon=target_lon,
+        radius_km=radius_km
+    )
+
+    # 3. Monitoramento e Simulação de Trajeto
+    print(f"\n✅ Monitoramento ativo para '{dest_input}' (Raio: {radius_km * 1000}m).")
+    print("Insira novas coordenadas de localização conforme se desloca (ou digite 'auto' para checar IP atual novamente, ou 'sair'):\n")
+
+    sim_lat, sim_lon = curr_lat, curr_lon
+
+    while alarm.is_active:
+        dist = alarm.calculate_distance(sim_lat, sim_lon)
+        print(f"📍 Distância atual até o destino: {round(dist, 3)} km ({round(dist * 1000)} metros)")
+
+        if dist <= alarm.radius_km:
+            alarm.play_alarm_sound()
+            alarm.is_active = False
+            break
+
+        user_cmd = input("\n👉 Digite 'lat, lon' atuais, 'auto' para re-checar IP, ou 'sair': ").strip()
+
+        if user_cmd.lower() == 'sair':
+            print("Alarme cancelado.")
+            break
+        elif user_cmd.lower() == 'auto':
+            sim_lat, sim_lon, _ = GeoAlarmSound.get_current_location()
+        else:
+            try:
+                coords = [float(c.strip()) for c in user_cmd.split(',')]
+                sim_lat, sim_lon = coords[0], coords[1]
+            except (ValueError, IndexError):
+                print("⚠️ Entrada inválida! Exemplo: -23.5503, -46.6339")
 
 
-if __name__ == '__main__':
-    GeoAlarmMobileApp().run()
+if __name__ == "__main__":
+    main()
+    
