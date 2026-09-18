@@ -1,2 +1,0 @@
-# Arrival
-Geoalarm
